@@ -1,0 +1,36 @@
+{
+  "name": "solmirror-dsh",
+  "version": "0.11.0",
+  "description": "瞬镜开放平台（solmirror）MCP 工具桥 + dsh 配置页：设置里粘贴 API 密钥、服务器地址，保存后用「测试连接」验证",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "mcp",
+    "aigc",
+    "image-generation",
+    "video-generation"
+  ],
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@deepseek-ai/dsh-credentials": "0.2.2-alpha.2",
+    "@deepseek-ai/dsh-mcp-client": "0.2.2-alpha.2",
+    "@deepseek-ai/schemastery": "3.18.6-alpha.1",
+    "@modelcontextprotocol/client": "2.2.0"
+  }
+}

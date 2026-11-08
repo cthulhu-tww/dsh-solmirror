@@ -1,0 +1,8 @@
+# 瞬镜开放平台 dsh 插件 v0.2.0
+#
+# 只挂自身一行（bare 包名根行——dsh.client 浏览器模块必须挂在根行上）。
+# 不再直接插 @deepseek-ai/dsh-mcp-client 配置行：MCP 连接由本插件的宿主入口
+# 程序化建立（密钥从 dsh 凭据存储/插件配置解析，只在内存拼 Bearer，不落本文件）。
+- insert:
+    - id: solmirror
+      name: 'solmirror-dsh'
