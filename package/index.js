@@ -1,28 +1,21 @@
 /**
- * solmirror-dsh 宿主入口（v0.9.0）
+ * dsh-solmirror 宿主入口
  *
- * 自持 MCP 连接（官方 SDK StreamableHTTPClientTransport + Bearer 密钥），用
- * @deepseek-ai/dsh-mcp-client 导出的 createMcpToolDefinition 把服务端工具
- * 注册到 ToolRuntime（公开名沿用 mcp__solmirror__<raw> 命名契约），并在注册前
- * 包一层"可见模型组"过滤：
- *   - list_models 结果按 visibleGroups 收窄（agent 只看到勾选的组）
+ * 自持 MCP 连接（StreamableHTTPClientTransport + Bearer 密钥），把服务端工具注册到
+ * ToolRuntime（公开名 mcp__solmirror__<raw>），并按"可见模型组"过滤：
+ *   - list_models 结果按 visibleGroups 收窄
  *   - generate_image / generate_video 对不可见组的模型直接报错，不打上游
  *
- * v0.3.0：generate_video 不再走一次性 MCP 桥，改为 dsh 原生后台任务——提交后
- * 由 ctx.jobs 注册一个跟进 job（内部轮询 get_generation），完成时经 dsh 通知链
- * 把结果（含无水印 URL）作为消息推给主代理，agent 无需自己轮询。宿主未组合
- * jobs 服务时自动降级回"提交即返 + agent 轮询"模式。
+ * generate_video 由 dsh 原生后台任务跟进（宿主未组合 jobs 服务时降级为
+ * "提交即返 + agent 轮询"）。密钥解析：插件配置 apiKey → dsh 凭据存储
+ * （apiKeyEnv 引用）；明文只在内存拼 Authorization 头。
  *
- * 密钥解析顺序：插件配置的 secret 字段（apiKey）→ dsh 凭据存储（apiKeyEnv 指向
- * 的 CredentialRef，即设置页/`~/.dsh/.credentials.yaml` 保存的值）。明文只在
- * 内存里拼 Authorization 头，不写任何 patch/env 文件。
- *
- * 另在 dsh webserver（与网页同源，无 CORS 问题）注册五个管理路由供配置页/媒体卡使用：
- *   GET  /plugins/solmirror/status     连接状态 + 模型组目录快照
- *   POST /plugins/solmirror/test       用当前密钥做一次一次性握手（测试连接）
- *   POST /plugins/solmirror/reconnect  强制重连（手动端点；设置页保存后不再自动调用）
- *   GET  /plugins/solmirror/calls      callId→generationId 台账（媒体卡反查）
- *   GET  /plugins/solmirror/generation/{id}  状态+现签媒体地址（浏览器半边轮询/挂载取用）
+ * dsh webserver 管理路由（与网页同源）：
+ *   GET  /plugins/solmirror/status     连接状态 + 目录快照
+ *   POST /plugins/solmirror/test       一次性握手（测试连接）
+ *   POST /plugins/solmirror/reconnect  强制重连（手动端点）
+ *   GET  /plugins/solmirror/calls      callId→generationId 映射（媒体卡反查）
+ *   GET  /plugins/solmirror/generation/{id}  状态 + 媒体地址
  */
 
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
@@ -31,7 +24,7 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import z from '@deepseek-ai/schemastery'
 import { uploadReference, UploadError } from './upload.js'
 
-// 包名（须与 package.json name / cordis.patch.yml name 一致；npm 发布名 2026-11-09 起）
+// 包名：须与 package.json / cordis.patch.yml 保持一致
 export const name = 'dsh-solmirror'
 
 /** 依赖宿主服务：工具注册、凭据解析、webserver 管理路由（base+web-app 组合均提供）。 */
@@ -39,7 +32,7 @@ export const inject = ['tools', 'credentials', 'webServer']
 
 export const Config = z.object({
   url: z.string().default('https://aigcserver.solmirror.cn/mcp').volatile()
-    .description('瞬镜 MCP 服务地址（本机开发默认；生产替换为平台域名）'),
+    .description('瞬镜 MCP 服务地址'),
   apiKey: z.string().role('secret').volatile()
     .description('API 密钥（sk- 开头）。直接粘贴到这里，或留空走下方凭据引用'),
   apiKeyEnv: z.string().role('credential-ref').default('SOLMIRROR_API_KEY').volatile()
@@ -58,14 +51,13 @@ export const Config = z.object({
 
 const SERVER_NAME = 'solmirror'
 
-// callId→生成台账 的私有映射：模型可见文本已不再携带 generation id（owner 拍板
-// id 维护是插件内部事务），气泡媒体面经 /plugins/solmirror/calls 路由取这张表。
-// 持久化到 ~/.dsh/plugins/，重启 dsh 与历史会话回放都有效。
+// callId→generationId 私有映射：工具返回文本不携带 id，气泡媒体面经
+// /plugins/solmirror/calls 路由反查本表；持久化到 ~/.dsh/plugins/，重启与历史会话回放有效。
 import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-// 文件名沿用旧包名不改：改名会丢历史会话的 callId→generationId 映射（媒体卡回放依赖）
+// 文件名历史沿用，勿改（旧会话映射兼容）
 const CALLS_FILE = join(homedir(), '.dsh', 'plugins', 'solmirror-dsh-calls.json')
 
 export function apply(ctx, config) {
@@ -111,8 +103,7 @@ export function apply(ctx, config) {
     const refName = String(config.apiKeyEnv.get() ?? '').trim()
     if (refName) {
       try {
-        // resolve 返回 ResolvedCredential {value, source}（v0.2.0 误把整个对象 String()
-        // 成 "[object Object]" 发出去 → 服务端 401，这就是"密钥已保存仍鉴权失败"的根因）
+        // resolve 返回 {value, source}，须取 .value 作密钥明文
         const resolved = await ctx.credentials.resolve(credentialRef(refName))
         const value = typeof resolved === 'string' ? resolved : resolved?.value
         if (value) return { key: String(value).trim(), source: `credential:${resolved.source ?? '?'}` }
@@ -142,7 +133,7 @@ export function apply(ctx, config) {
 
   function describeError(error) {
     const text = String(error?.message ?? error ?? '')
-    if (/\b(401|403)\b|unauthorized|forbidden/i.test(text)) return '鉴权失败：密钥无效、未创建或已吊销'
+    if (/\b(401|403)\b|unauthorized|forbidden/i.test(text)) return '鉴权失败：密钥无效、未创建或已删除'
     if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|fetch failed|timeout/i.test(text)) {
       return `连不上瞬镜服务（检查地址与本机后端）：${text}`
     }
@@ -173,15 +164,14 @@ export function apply(ctx, config) {
         const transport = new StreamableHTTPClientTransport(new URL(url), {
           requestInit: { headers: { Authorization: `Bearer ${key}` } },
         })
-        const client = new Client({ name: 'solmirror-dsh', version: '0.9.0' })
+        const client = new Client({ name: 'dsh-solmirror', version: '0.11.0' })
         await client.connect(transport)
         state.client = client
         state.connectedUrl = url
         state.connectedKey = key
 
-        // 工具同步：generate_video 用原生后台任务包装（v0.3.0），其余走
-        // createMcpToolDefinition（承接图片→附件等全部桥接机制）；可见性过滤
-        // 包在每个工具的 call/execute 里做。
+        // 工具同步：generate_video 用原生后台任务包装，其余走 createMcpToolDefinition；
+        // 可见性过滤包在每个工具的 call/execute 里做。
         const listed = await client.listTools()
         const next = new Map()
         for (const tool of listed.tools ?? []) {
@@ -235,8 +225,7 @@ export function apply(ctx, config) {
     applyCatalogPayload(catalogPayloadOf(result))
   }
 
-  // 服务端作废长会话（API 重启/MCP 会话过期）时 callTool 报会话类错误——
-  // 状态还停在 connected，连接漂移检测发现不了。统一出口：命中特征就重连一次再试。
+  // 服务端作废长会话时 callTool 报会话类错误而状态仍停在 connected；命中特征即重连重试。
   const SESSION_DEAD = /no valid session|session id|session terminated|invalid session|\b404\b|not found/i
 
   /** 统一 MCP 调用出口：会话失效自动重建常驻连接并重试一次。 */
@@ -261,7 +250,7 @@ export function apply(ctx, config) {
       ?? safeJsonParse(Array.isArray(result?.content) ? result.content[0]?.text : null)
   }
 
-  /** objname 制（v0.9.0）：按 obj_name 现签临时媒体地址；失败返回空串（调用方降级文案）。 */
+  /** 按 obj_name 现取临时媒体地址；失败返回空串（调用方降级文案）。 */
   async function fetchMediaUrl(objName) {
     if (!objName) return ''
     try {
@@ -327,8 +316,7 @@ export function apply(ctx, config) {
     const result = await callMcp(tool.name, args,
       { signal: execution.signal, timeout: config.toolCallTimeoutMs.get(), toolDefinition: tool })
     if (tool.name === 'generate_image') {
-      // 图片桥接调用也登记私有映射（结果文本对模型同样不再需要携带 id，
-      // 气泡媒体面靠 /plugins/solmirror/calls 反查）
+      // 登记私有映射（媒体面经 /plugins/solmirror/calls 反查）
       try {
         const payload = result?.structuredContent ?? catalogPayloadOf(result)
         if (Number.isInteger(payload?.generation_id)) {
@@ -341,11 +329,8 @@ export function apply(ctx, config) {
       } catch { /* 登记失败不影响返回 */ }
     }
     if (tool.name === 'list_models') {
-      // 每次调用都同步服务端目录（平台关组后勾选列表/组归属索引立即跟上；
-      // 此前只在连接时预热，路由可见性一改就过期）
+      // 每次调用同步服务端目录，勾选列表/组归属索引即时跟上
       try { applyCatalogPayload(catalogPayloadOf(result)) } catch { /* 刷新失败不影响本次返回 */ }
-      // 0.3.0 把守卫重构进 visibilityViolation 时这里漏了重取 allow，list_models
-      // 一调就 ReferenceError: allow is not defined —— 0.3.1 修复
       const allow = allowedGroups()
       if (allow) return filterCatalogResult(result, allow)
     }
@@ -355,8 +340,7 @@ export function apply(ctx, config) {
   /** 按可见组收窄 list_models 结果（structuredContent 与首块 JSON 文本同步重写）。 */
   function filterCatalogResult(result, allow) {
     try {
-      // structuredContent 缺席时回退解析首块 JSON 文本（FastMCP 对无 output schema
-      // 的工具常只给 text；0.3.1 前这里直接放行未过滤结果，偏好过滤静默失效）
+      // structuredContent 缺席时回退解析首块 JSON 文本（部分工具只回 text 块）
       const payload = result?.structuredContent ?? catalogPayloadOf(result)
       if (!payload || (!Array.isArray(payload.image) && !Array.isArray(payload.video))) return result
       const filtered = {}
@@ -374,13 +358,12 @@ export function apply(ctx, config) {
     }
   }
 
-  // ---- generate_video：dsh 原生后台任务包装（v0.3.0）----
+  // ---- generate_video：dsh 原生后台任务包装 ----
   //
   // 提交走 MCP（服务端受理即返 generation_id），随后在 dsh 的 jobs 注册表挂一个
-  // 跟进 job 轮询 get_generation；完成/失败经 tool-jobs 通知链以用户消息推给主
-  // 代理（空闲唤醒开新 turn，忙则注入下一步），agent 全程无需自己轮询。宿主未
-  // 组合 jobs 服务（或调用无 agent 上下文）时降级：返回 submitted 载荷，走
-  // agent 轮询模式（与 v0.2.x 行为一致）。
+  // 跟进 job 轮询 get_generation；完成/失败经通知链以用户消息推给主代理，agent
+  // 无需自己轮询。宿主未组合 jobs 服务（或调用无 agent 上下文）时降级为
+  // “提交即返 + agent 轮询”。
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -449,8 +432,7 @@ export function apply(ctx, config) {
         },
         render: (_args, value) => [{
           type: 'text',
-          // 台账 id 是插件内部事务，不进模型可见文本（降级路径除外——无后台任务
-          // 服务时模型必须拿 id 轮询，功能性保留）
+          // generation id 不进模型可见文本（降级路径除外：无后台任务服务时须拿 id 轮询）
           text: value.kind === 'background'
             ? '视频生成已提交，由 dsh 后台任务自动跟进，完成或失败会自动通知你无水印链接与积分摘要，无需轮询。'
             : `视频生成已提交（generation ${value.generation_id}，状态 ${value.status}）。宿主无后台任务服务，请以 15~30 秒间隔调用 mcp__solmirror__get_generation(generation_id=${value.generation_id}) 轮询到终态。`,
@@ -481,7 +463,7 @@ export function apply(ctx, config) {
     }
   }
 
-  /** 本地工具：上传参考素材拿 obj_name（v0.9.0 objname 制，可复用；sjref 已下线）。 */
+  /** 本地工具：上传参考素材拿 obj_name（可复用）。 */
   function uploadToolDefinition() {
     return {
       name: `mcp__${SERVER_NAME}__upload_reference`,
@@ -581,7 +563,7 @@ export function apply(ctx, config) {
               lastStatus = status
             }
             if (status === 'succeeded') {
-              // objname 制（v0.9.0）：载荷只带 obj_name，临时地址经 get_media_url 现签
+              // 载荷只带 obj_name，临时地址经 get_media_url 现取
               const url = await fetchMediaUrl(payload.video?.obj_name)
               const summary = mediaSummary(payload)
               job.append(url ? `生成成功：${url}\n` : '生成成功（地址见对话媒体卡片 / 开放平台·生成记录）。\n')
@@ -619,7 +601,7 @@ export function apply(ctx, config) {
   async function testConnection() {
     const url = readUrl()
     const { key, source } = await readKey()
-    // 诊断回显（仅前 8 位 + 长度，与平台密钥列表同级暴露，用于排查"存的不是你以为的那把"
+    // 诊断回显：仅前 8 位 + 长度（排查存错密钥）
     const diag = key ? { keyPrefix: key.slice(0, 8), keyLength: key.length } : {}
     if (!url) return { ok: false, message: '未配置服务器地址', ...diag }
     if (!key) return { ok: false, message: '未配置 API 密钥', ...diag }
@@ -628,7 +610,7 @@ export function apply(ctx, config) {
       const transport = new StreamableHTTPClientTransport(new URL(url), {
         requestInit: { headers: { Authorization: `Bearer ${key}` } },
       })
-      const client = new Client({ name: 'solmirror-dsh-test', version: '0.9.0' })
+      const client = new Client({ name: 'dsh-solmirror-test', version: '0.11.0' })
       await client.connect(transport)
       try { await client.close() } catch { /* 关闭竞态忽略 */ }
       return { ok: true, message: `握手成功（${Date.now() - started}ms）`, latencyMs: Date.now() - started, keySource: source, ...diag }
@@ -684,7 +666,7 @@ export function apply(ctx, config) {
           send(res, 200, { ok: state.status === 'connected', status: state.status, message: state.lastError })
         },
       }),
-      // callId→生成台账 私有映射（模型可见文本不携带 id 后，气泡媒体面从这里反查）
+      // callId→generationId 私有映射（媒体面从这里反查）
       ctx.webServer.register({
         kind: 'exact', path: '/plugins/solmirror/calls',
         handler: async (req, res) => {
@@ -693,8 +675,8 @@ export function apply(ctx, config) {
           send(res, 200, { ok: true, calls })
         },
       }),
-      // 气泡视频播放器数据源：浏览器半边 toolview 每次挂载/轮询都来这里取
-      // 最新状态+新签名 URL（VOD 签名会过期，不能把旧 URL 固化进会话渲染）。
+      // 媒体卡数据源：浏览器半边每次挂载/轮询都来这里取最新状态与媒体地址
+      //（临时地址会过期，不能把旧 URL 固化进会话渲染）。
       ctx.webServer.register({
         kind: 'prefix', path: '/plugins/solmirror/generation',
         handler: async (req, res) => {
@@ -706,17 +688,14 @@ export function apply(ctx, config) {
           const client = state.client
           if (!client) return send(res, 503, { ok: false, message: '瞬镜 MCP 未连接' })
           try {
-            // 媒体卡只要状态+临时地址：include_images=false 免服务端下载原图内嵌
-            // base64（图片冷缓存可拖满 30s，纯浪费），快慢差两个数量级。
-            // objname 制（v0.9.0）：载荷只带 obj_name，地址经 get_media_url 每次现签
-            //（浏览器半边每次挂载都来取，历史会话回看永远拿到新地址）
+            // 媒体卡只要状态+地址：include_images=false 免去服务端内嵌图片内容，
+            // 载荷只带 obj_name，地址经 get_media_url 每次现取
             const result = await callMcp('get_generation',
               { generation_id: generationId, include_images: false }, { timeout: 30_000 })
             const payload = result?.structuredContent
               ?? safeJsonParse(Array.isArray(result?.content) ? result.content[0]?.text : null)
             if (!payload?.status) throw new Error('返回缺少状态载荷')
-            // 后端 _serialize_generation 对视频也固定带 images:[]，分支只认 media_type，
-            // 勿用 Array.isArray(payload.images) 判别（0.5.0 曾因此把视频 URL 判空）
+            // 视频载荷也固定带 images:[]，判别只认 media_type
             const status = String(payload.status)
             let urls = []
             if (status === 'succeeded') {
@@ -745,10 +724,8 @@ export function apply(ctx, config) {
   }, 'solmirror: 管理路由')
 
   // ---- 变更感知：低频漂移对账 ----
-  // 2026-11-08 owner 拍板：保存密钥/地址不再立即重连（设置页保存只保存，验证走
-  // 「测试连接」）。这里也不再订阅 credentials/reference-updated 事件——否则设置页
-  // 保存密钥仍会经由该事件立刻触发 connect，等于换了个隐蔽路径继续"保存即重连"。
-  // 新密钥/新地址统一由本对账循环在 10s 内静默换用；外部直接改凭据文件同理覆盖。
+  // 保存密钥/地址不主动触发重连（验证走「测试连接」）；新配置由本对账循环在
+  // 10s 内静默换用，外部直接改凭据/配置文件同理覆盖。
   ctx.effect(() => {
     const disposers = []
     const timer = setInterval(() => {

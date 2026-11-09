@@ -1,4 +1,4 @@
-# 瞬镜开放平台 dsh 插件 v0.2.0
+# 瞬镜开放平台 dsh 插件
 #
 # 只挂自身一行（bare 包名根行——dsh.client 浏览器模块必须挂在根行上）。
 # 不再直接插 @deepseek-ai/dsh-mcp-client 配置行：MCP 连接由本插件的宿主入口

@@ -1,5 +1,5 @@
 /**
- * solmirror-dsh 浏览器模块（v0.4.0；0.10.3 修媒体卡 id 反查重试）
+ * dsh-solmirror 浏览器模块
  *
  * 1) 在 dsh 设置面板注册「瞬镜开放平台」自定义页：
  *   - 连接状态徽章 + 最近错误
@@ -8,13 +8,11 @@
  *   - 可见模型组勾选（写入插件配置；宿主侧实时过滤 list_models 并拦截越组生成）
  *   - 测试连接（宿主侧用当前密钥做一次性 MCP 握手）
  *
- * 2) 接管 generate_video 工具行的渲染（tool.call.toolview 键控插槽）：
- *   dsh 原生气泡只有图片画廊、没有视频播放器；本 toolview 在气泡内展示
- *   生成进度，成功后内嵌 <video> 直接播放（签名 URL 经宿主半边本地路由
- *   动态取新，过期也能回放历史会话）。
+ * 2) 接管生成工具行的渲染（tool.call.toolview 键控插槽）：气泡内展示生成
+ *   进度，成功后内嵌 <video> / 出图墙（媒体地址经宿主半边本地路由动态取新，
+ *   过期也能回放历史会话）。
  *
- * 格式约定：dsh client 模块表工厂（window.__ModuleLoader__.load），参照
- * deepseek-harness apps/web/tests/fixtures/plugins/fixture-live-client。
+ * 格式约定：dsh client 模块表工厂（window.__ModuleLoader__.load）。
  */
 window.__ModuleLoader__.load({
   id: 'dsh-solmirror',
@@ -85,8 +83,8 @@ window.__ModuleLoader__.load({
         try { await fn() } finally { setBusy(''); void refresh() }
       }
 
-      // 保存只保存，不主动触发连接（owner 拍板 2026-11-08）：验证连接用下方
-      // 「测试连接」；常驻连接由宿主侧 10s 漂移对账自动换用新密钥/新地址。
+      // 保存只保存，不主动触发连接：验证走「测试连接」；常驻连接由宿主侧
+      // 10s 漂移对账自动换用新密钥/新地址。
       const saveKey = () => withBusy('key', async () => {
         const value = keyInput.trim()
         if (!value) return note('err', '请先粘贴密钥（sk- 开头）')
@@ -211,10 +209,9 @@ window.__ModuleLoader__.load({
     }
 
 
-    // ---- 会话媒体面（v0.5.0：回合尾部 turnTail，不随工具行折叠）----
-    // dsh 工具行在回合结束后会被折叠收起，媒体放里面看不见；且原生 UI 没有
-    // 视频播放器。本节把「生成中占位框 + 完成的视频/图片」挂在 turnTail——
-    // 对话主流里、永远展开。工具行只留一行状态回执。
+    // ---- 会话媒体面：挂在回合尾部 turnTail（对话主流、不随工具行折叠）----
+    // dsh 工具行在回合结束后会被折叠收起，媒体放里面看不见；「生成中占位框 +
+    // 完成的视频/图片」挂在 turnTail 永远展开，工具行只留一行状态回执。
     const VIDEO_TOOL = 'mcp__solmirror__generate_video'
     const IMAGE_TOOL = 'mcp__solmirror__generate_image'
     const TERMINAL_STATUSES = new Set(['succeeded', 'failed', 'review_rejected'])
@@ -252,8 +249,7 @@ window.__ModuleLoader__.load({
     document.head.append(styleTag)
 
     function statusTextOf(status) {
-      // 服务端 MCP 返回小写（'generating'/'pending'），此前只匹配大写导致
-      // 副文案直接显示英文原文
+      // 服务端返回小写状态（'generating'/'pending'）
       const s = String(status ?? '').toLowerCase()
       if (s === 'succeeded') return '已生成'
       if (s === 'failed') return '生成失败'
@@ -271,8 +267,8 @@ window.__ModuleLoader__.load({
         .join('\n')
     }
 
-    // 终态结果短期缓存（0.7.1）：页面重进/历史气泡回看时同 id 媒体卡直接用缓存
-    // 渲染、零请求（路由每次现签 URL，签名有效期远大于 TTL，安全）
+    // 终态结果短期缓存：页面重进/历史气泡回看时同 id 媒体卡直接用缓存渲染、
+    // 零请求（临时地址有效期远大于 TTL）
     const terminalCache = new Map()
     const TERMINAL_CACHE_TTL = 5 * 60 * 1000
 
@@ -305,8 +301,8 @@ window.__ModuleLoader__.load({
       return null
     }
 
-    // callId→生成台账 映射（宿主半边私有路由）：模型可见文本已不携带 id，
-    // 新会话的媒体面靠这张表反查；旧会话文本里本就有 id，regex 兜底。
+    // callId→generationId 映射（宿主半边私有路由）：新会话的媒体面靠这张表
+    // 反查；旧会话文本里本就有 id，regex 兜底。
     const callsCache = { at: 0, data: {} }
     async function loadCalls() {
       if (Date.now() - callsCache.at < 30_000) return callsCache.data
@@ -344,9 +340,8 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!generationId) return undefined
-        // 缓存命中的终态：零请求。0.10.4：视频卡的 id 经 calls 反查比首渲染晚一拍，
-        // useState 初始化器已在 id=null 时跑过（info 恒 null）——只 bail 不回填会让
-        // 卡片永久停在"生成中"占位框（切换会话再切回即复现），须先播种再停轮询
+        // 缓存命中的终态：零请求。id 经 calls 反查比首渲染晚一拍，初始化器可能
+        // 已在 id=null 时跑过——须先播种缓存再停轮询，否则卡片停在占位框
         const cached = cachedTerminal(generationId)
         if (cached) {
           setInfo(prev => (prev === null ? cached : prev))
@@ -377,9 +372,7 @@ window.__ModuleLoader__.load({
             failures += 1
             setNetError(String((error && error.message) || error))
           }
-          // API 重启/停机窗口曾把这里打满 20 次后永久停轮询，卡片死在"生成中"、
-          // 服务恢复也不自愈——改为指数退避（5s→10s→…→60s 封顶）无限重试，
-          // 恢复成功即回到 5s 节奏
+          // 轮询失败指数退避（5s→60s 封顶）无限重试，服务恢复后回到 5s 节奏
           timer = setTimeout(tick, failures === 0 ? 5000 : Math.min(5000 * 2 ** failures, 60000))
         }
         void tick()
@@ -399,8 +392,7 @@ window.__ModuleLoader__.load({
       }
       const status = info ? String(info.status).toLowerCase() : ''
       if (!TERMINAL_STATUSES.has(status)) {
-        // 从未拿到过状态且轮询在失败（API 停机/重启窗口）→ 副文案明示在自动重试，
-        // 不再让卡看起来像"一直在生成"
+        // 从未拿到状态且轮询失败中 → 副文案明示在自动重试
         const sub = status ? statusTextOf(status)
           : (netError ? '状态暂时取不到，自动重试中…' : undefined)
         return React.createElement('div', { style: MS.wrap },
@@ -452,10 +444,8 @@ window.__ModuleLoader__.load({
         if (!block || typeof block !== 'object') return
         const subCalls = Array.isArray(block.subCalls) ? block.subCalls : []
         for (const child of subCalls) visit(child)
-        // ToolCallBlock 三态：ToolResultNode 用 kind:'tool-result' 标记（无 phase 字段），
-        // Preparing/Started 才有 phase。结果相名字官方解析顺序=call.name 优先
-        // （ui-tool ToolCallTree.callName）。0.5.0 曾误判 block.phase==='result' 恒假，
-        // genId 解析不出、占位框永远停在"已提交"不轮询。
+        // ToolCallBlock 三态：ToolResultNode 用 kind:'tool-result' 标记（无 phase
+        // 字段），Preparing/Started 才有 phase；结果相名字按 call.name 优先解析
         const isResult = typeof block.kind === 'string' && 'content' in block
         const name = String(isResult ? (block.call?.name ?? block.name ?? '') : (block.name ?? ''))
         if (name !== VIDEO_TOOL && name !== IMAGE_TOOL) return
@@ -469,9 +459,8 @@ window.__ModuleLoader__.load({
         found.push({
           callId: callId || `${name}-${found.length}`,
           media,
-          // 提交就失败的调用（400 参数错/越组拦截等）没有 generationId，此前按
-          // 占位框渲染成"生成中"——用户看着像还有一个视频在跑，实际根本没提交
-          // 成功。错误文本带出去渲染成一行失败回执，与 toolRowView 错误分支同语义
+          // 提交就失败的调用没有 generationId：渲染一行失败回执，不占位框
+          // （避免误当"还有一个在生成"）
           error: isResult && block.isError ? textOf(block) : '',
           // 新会话文本无 id → 私有映射反查；旧会话/降级路径文本带 id → regex
           generationId: generationIdOf(media, resultText)
@@ -501,11 +490,8 @@ window.__ModuleLoader__.load({
         if (!gens || gens.length === 0) return undefined
         if (gens.every(gen => gen.generationId)) return undefined
         let stopped = false
-        // 0.10.3：id 反查此前是挂载时一次性 loadCalls——静置会话（切走再切回）没有
-        // 新快照就不会再渲染，那次 fetch 偶发失败后永无重试，generationId 恒空，
-        // 卡片连轮询都不启动、永远停在"生成中"占位框（失败视频切换会话即复现）。
-        // 改为定时重试直到本回合全部解析出 id；loadCalls 自带 30s TTL，实际拉取
-        // 频率 ≤30s 一次；全部解析后本 effect 重建即清掉 interval。
+        // id 反查定时重试直到本回合全部解析（loadCalls 自带 30s TTL）；
+        // 全部解析后本 effect 重建即清掉 interval。
         const attempt = () => {
           loadCalls().then(data => {
             if (stopped || !data || Object.keys(data).length === 0) return
@@ -522,12 +508,10 @@ window.__ModuleLoader__.load({
         gens.map(gen => React.createElement(MediaCard, { key: gen.callId, gen })))
     }
 
-    /** 工具行视图（0.7.0）：turn-tail 节点只在 turn/end 发布（chat-snapshot-builder
-     *  原话"publishes its turn-tail Node on turn/end"），活跃回合里回合尾部不存在——
-     *  图片工具内最多等 60s，这段窗口的媒体面就挂工具行（toolview 键控替换整行）：
-     *  进行中=跟随比例占位框、结果相=媒体卡（图片常已是终态直接出图墙；视频交给
-     *  轮询）。回合收尾后工具行随 process 折叠、回合尾部的媒体卡无缝接管。
-     *  id 解析不出（新式视频文本无 id）或错误态回退一行回执；台账 id 不上 UI。 */
+    /** 工具行视图：turn-tail 节点只在回合结束时发布，活跃回合里回合尾部不存在，
+     *  这段窗口的媒体面挂工具行（toolview 键控替换整行）：进行中=跟随比例占位框、
+     *  结果相=媒体卡（图片常已是终态直接出图墙；视频交给轮询）。回合收尾后工具行
+     *  折叠、回合尾部的媒体卡接管。id 解析不出或错误态回退一行回执；id 不上 UI。 */
     function toolRowView(media) {
       return function ToolRow(props) {
         const phase = props.phase
@@ -554,8 +538,8 @@ window.__ModuleLoader__.load({
           generationId: generationIdOf(media, resultText),
           aspect: parseAspect(block.call && block.call.argsRaw),
         }
-        // 结果相文本带 id（图片 JSON 必带；视频降级/旧文本带）→ 行内媒体卡；
-        // 新式视频文本无 id → 一行回执（尾部卡有映射反查全通道，接管展示）
+        // 结果相文本带 id → 行内媒体卡；无 id（新式视频文本）→ 一行回执
+        //（尾部卡有映射反查全通道，接管展示）
         if (gen.generationId) return React.createElement(MediaCard, { gen })
         return React.createElement('div', { style: MS.rowLine },
           React.createElement('span', null, label, ' · 已提交'))

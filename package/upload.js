@@ -1,21 +1,17 @@
 /**
- * solmirror 参考素材直传引擎（v0.9.0，objname 制）
+ * 参考素材上传引擎
  *
- * 本地文件 → 平台上传票 → 火山存储 → sjref://ticket/{id} 引用（填入
- * generate_image / generate_video 的 reference_images / reference_videos）。
+ * 本地文件 → 平台上传票 → 云存储 → obj_name 引用（填入 generate_image /
+ * generate_video 的 reference_images / reference_videos / reference_audios）。
  *
- * 两条路（2026-11-04 真机对照实测定案）：
- * - **视频 → VOD STS 直传**（字节不过平台 API）：Apply/Commit 走 vod.
- *   volcengineapi.com（V4 签名，GET），上传直连 TOS 节点（PUT + Content-CRC32，
- *   Authorization 用 Apply 预签的 Auth），≤20MB 单 PUT / >20MB 分片，Commit 返回
- *   Vid 交平台 complete 复核（≤30s/≤50M）。
- * - **图片 → 平台中转**（multipart POST /data）：火山 ImageX 网关对 node 客户端
- *   的直传有隐性风控——三步全 200 但元数据不落库（python 同协议可过，node 伪装
- *   头/原生 https 均无效），插件侧无法突破；图片体积小，中转由平台落 ImageX。
+ * 两条路：
+ * - 视频：VOD STS 直传（字节不过平台 API）——Apply/Commit 走 vod.volcengineapi.com
+ *   （V4 签名，GET），上传直连 TOS 节点（PUT + Content-CRC32，Authorization 用
+ *   Apply 预签的 Auth），≤20MB 单 PUT / >20MB 分片，Commit 返回 Vid 交平台复核。
+ * - 图片/音频：multipart POST /data 平台中转落云。
  *
- * 云 API 一律走 node:https 原生栈（实测通过的形态；平台 REST 用 fetch 即可）。
- * 限制与平台契约一致（openapi-reference-upload-contract.md）：图片/视频/音频、≤50MB、
- * 视频 ≤30s、音频 ≤60s（mp3/wav）。
+ * 云 API 一律走 node:https 原生栈；平台 REST 用 fetch。
+ * 限制：图片/视频/音频 ≤50MB、视频 ≤30s、音频 ≤60s（mp3/wav）。
  */
 import { createHash, createHmac } from 'node:crypto'
 import { readFile, stat } from 'node:fs/promises'
@@ -83,7 +79,7 @@ function nativeRequest(urlStr, { method, headers, body }) {
 }
 
 // ---------------------------------------------------------------------------
-// 火山 V4 签名（volcengine 变体，与 SignerV4.py 同构）
+// 火山 V4 签名（volcengine 变体）
 // ---------------------------------------------------------------------------
 
 function volcSignHeaders(sts, { method, host, path, query, body, service }) {
@@ -113,7 +109,7 @@ function volcSignHeaders(sts, { method, host, path, query, body, service }) {
   const signature = createHmac('sha256', k).update(stringToSign).digest('hex')
   return {
     accept: 'application/json',
-    'user-agent': 'solmirror-dsh/0.9.0',
+    'user-agent': 'dsh-solmirror/0.11.0',
     'content-type': 'application/json',
     'x-content-sha256': bodyHash,
     'x-date': long,
@@ -191,7 +187,7 @@ async function uploadVod(sts, spaceName, fileName, ext, bytes) {
     for (let i = 0; i < count; i++) {
       const chunk = bytes.subarray(i * CHUNK_SIZE, Math.min(bytes.length, (i + 1) * CHUNK_SIZE))
       const sum = crc32hex(chunk)
-      // gateway 大文件模式 partNumber 从 1 起（python SDK is_large_file=True 同口径）
+      // gateway 大文件模式 partNumber 从 1 起
       const payload = await tosPut(
         `${base}?partNumber=${i + 1}&uploadID=${uriEncode(uploadId)}`,
         { ...authHeaders, 'Content-CRC32': sum }, chunk)
@@ -240,7 +236,7 @@ async function restCall(origin, key, path, { json, formData } = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// 主入口：本地文件 → sjref 引用
+// 主入口：本地文件 → obj_name 引用
 // ---------------------------------------------------------------------------
 
 /** STS 凭证键名归一（VOD 驼峰；保留 ImageX 下划线兼容）。 */
@@ -257,8 +253,7 @@ function normalizeSts(raw) {
 }
 
 /**
- * 上传本地参考素材并领取 obj_name 引用（v0.9.0 起：objname 制，可复用——sjref 已下线；
- * v0.10.2 起 kind 参数移除——类型按扩展名自动识别，agent 无从传错）。
+ * 上传本地参考素材并领取 obj_name 引用（可复用；类型按扩展名自动识别）。
  * @param {object} opts {filePath, key, mcpUrl} —— key=API 密钥明文，
  *   mcpUrl=插件配置的 MCP 地址（origin 推导 REST base）
  * @returns {Promise<{obj_name,kind,meta}>}
@@ -288,9 +283,8 @@ export async function uploadReference({ filePath, key, mcpUrl }) {
   if (!Number.isInteger(ticket?.ticket_id)) throw new UploadError('签发响应缺少 ticket_id')
 
   if (resolvedKind === 'image' || resolvedKind === 'audio') {
-    // 图片/音频中转：multipart 由平台落云（图片 ImageX——真机实测 node 直传被网关假
-    // 成功；音频 S3 audios_bucket，平台 ffprobe 复核 ≤60s）；图片 /data 响应的
-    // obj_name 是 ImageX 实际对象名（非预签名），以响应为准
+    // 图片/音频中转：multipart 由平台落云；图片 /data 响应的 obj_name 是实际
+    // 对象名（非预签名），以响应为准
     const bytes = await readFile(filePath)
     const form = new FormData()
     form.append('file', new Blob([bytes], { type: mime }), extname(filePath) || 'file')
