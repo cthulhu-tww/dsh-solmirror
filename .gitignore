@@ -1,4 +1,3 @@
 *.zip
 *.tgz
-.zipstage/
 node_modules/

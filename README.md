@@ -25,9 +25,11 @@ dsh plugin --profile <你的profile> add dsh-solmirror
 
 或在 dsh 网页 → 侧栏「插件」→ 添加插件，输入 `dsh-solmirror`。
 
-**方式二：zip 离线安装**
+**方式二：从源码安装**
 
-从瞬镜平台「开放平台 → 插件接入」下载 `dsh-solmirror.zip`，打开 dsh 的创造模式，把压缩包拖进对话并发送「帮我安装一下这个插件」，智能体会自动完成安装。
+```sh
+dsh plugin --profile <你的profile> add github:cthulhu-tww/dsh-solmirror
+```
 
 ## 配置
 
