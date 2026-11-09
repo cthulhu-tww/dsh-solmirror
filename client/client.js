@@ -279,6 +279,14 @@ window.__ModuleLoader__.load({
 
     function generationIdOf(media, resultText) {
       if (!resultText) return null
+      // 对外任务ID为 UUID（服务端 2026-11-09 起）——必须先于数字匹配，
+      // 否则 UUID 前导数字段会被旧正则截成错误短 id；数字匹配仅为历史会话兼容
+      const byUuidText = /generation ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i.exec(resultText)
+      if (byUuidText) return byUuidText[1]
+      if (media === 'image') {
+        const byUuidJson = /"generation_id"\s*:\s*"([0-9a-f-]{36})"/i.exec(resultText)
+        if (byUuidJson) return byUuidJson[1]
+      }
       const byText = /generation (\d+)/.exec(resultText)
       if (byText) return Number(byText[1])
       if (media === 'image') {
@@ -463,8 +471,9 @@ window.__ModuleLoader__.load({
           // （避免误当"还有一个在生成"）
           error: isResult && block.isError ? textOf(block) : '',
           // 新会话文本无 id → 私有映射反查；旧会话/降级路径文本带 id → regex
+          // generationId 为 UUID 字符串（服务端 2026-11-09 起）或旧数字 id
           generationId: generationIdOf(media, resultText)
-            ?? (Number.isInteger(mapped?.generationId) ? mapped.generationId : null),
+            ?? (mapped?.generationId ?? null),
           aspect: parseAspect(argsRaw) ?? ratioOf(mapped?.aspect),
         })
       }
