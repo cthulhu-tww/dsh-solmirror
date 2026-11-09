@@ -38,7 +38,7 @@ export const name = 'dsh-solmirror'
 export const inject = ['tools', 'credentials', 'webServer']
 
 export const Config = z.object({
-  url: z.string().default('http://127.0.0.1:9107/mcp').volatile()
+  url: z.string().default('https://aigcserver.solmirror.cn/mcp').volatile()
     .description('瞬镜 MCP 服务地址（本机开发默认；生产替换为平台域名）'),
   apiKey: z.string().role('secret').volatile()
     .description('API 密钥（sk- 开头）。直接粘贴到这里，或留空走下方凭据引用'),

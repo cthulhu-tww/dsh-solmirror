@@ -161,14 +161,14 @@ window.__ModuleLoader__.load({
           React.createElement('div', { style: S.cardTitle }, '服务器地址'),
           React.createElement('div', { style: S.row },
             React.createElement('input', {
-              type: 'text', style: S.input, value: urlDraft, placeholder: 'http://127.0.0.1:9107/mcp',
+              type: 'text', style: S.input, value: urlDraft, placeholder: 'https://aigcserver.solmirror.cn/mcp',
               onChange: e => setUrlDraft(e.target.value),
               onKeyDown: e => { if (e.key === 'Enter') void saveUrl() },
             }),
             React.createElement('button', { type: 'button', style: S.button, disabled: busy === 'url', onClick: saveUrl },
               busy === 'url' ? '保存中…' : '保存'),
           ),
-          React.createElement('div', { style: { ...S.muted, marginTop: '6px' } }, '本机开发默认 http://127.0.0.1:9107/mcp；生产替换为平台域名。'),
+          React.createElement('div', { style: { ...S.muted, marginTop: '6px' } }, '默认已填好线上地址，一般无需修改；也可以从瞬镜平台「开放平台 → 插件接入」页一键复制。'),
         ),
 
         // 可见模型组
