@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-solmirror.svg)](https://www.npmjs.com/package/dsh-solmirror)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-把[瞬镜开放平台](https://aigcserver.solmirror.cn)（Solmirror）的图片、视频生成能力接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）：智能体直接用提示词生成图片和视频，结果在对话内播放、展示，按平台价格计积分，失败自动退款。
+把[瞬镜开放平台](https://aigc.solmirror.cn)（Solmirror）的图片、视频生成能力接入 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）：智能体直接用提示词生成图片和视频，结果在对话内播放、展示，按平台价格计积分，失败自动退款。
 
 > Bring Solmirror's image & video generation models into dsh as MCP tools — with reference uploads, cost estimates, background-tracked video jobs and in-chat playback.
 
