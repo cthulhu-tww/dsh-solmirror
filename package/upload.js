@@ -239,7 +239,7 @@ async function restCall(origin, key, path, { json, formData } = {}) {
 // 主入口：本地文件 → obj_name 引用
 // ---------------------------------------------------------------------------
 
-/** STS 凭证键名归一（VOD 驼峰；保留 ImageX 下划线兼容）。 */
+/** STS 凭证键名归一（VOD 驼峰；兼容下划线风格）。 */
 function normalizeSts(raw) {
   const pick = (...keys) => {
     for (const k of keys) if (raw?.[k]) return raw[k]
