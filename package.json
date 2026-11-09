@@ -4,8 +4,8 @@
   "description": "瞬镜开放平台（solmirror）MCP 工具桥 + dsh 配置页：设置里粘贴 API 密钥、服务器地址，保存后用「测试连接」验证",
   "type": "module",
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js"
+    ".": "./lib/index.js",
+    "./client": "./client/client.js"
   },
   "engines": {
     "dsh": ">=0.2.0"
@@ -32,9 +32,8 @@
   },
   "homepage": "https://github.com/cthulhu-tww/dsh-solmirror#readme",
   "files": [
-    "index.js",
-    "client.js",
-    "upload.js",
+    "lib",
+    "client",
     "cordis.patch.yml",
     "README.md",
     "LICENSE"
