@@ -5,4 +5,4 @@
 # 程序化建立（密钥从 dsh 凭据存储/插件配置解析，只在内存拼 Bearer，不落本文件）。
 - insert:
     - id: solmirror
-      name: 'solmirror-dsh'
+      name: 'dsh-solmirror'

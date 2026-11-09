@@ -17,7 +17,7 @@
  * deepseek-harness apps/web/tests/fixtures/plugins/fixture-live-client。
  */
 window.__ModuleLoader__.load({
-  id: 'solmirror-dsh',
+  id: 'dsh-solmirror',
   factory(require) {
     const React = require('react')
 
@@ -234,7 +234,7 @@ window.__ModuleLoader__.load({
 
     // 占位框动效：慢速斜向扫光 + 文案呼吸。样式表随模块物化注入一次。
     const styleTag = document.createElement('style')
-    styleTag.dataset.plugin = 'solmirror-dsh'
+    styleTag.dataset.plugin = 'dsh-solmirror'
     styleTag.textContent = [
       '@keyframes solmirror-sweep { 0% { transform: translateX(-120%);} 100% { transform: translateX(220%);} }',
       '@keyframes solmirror-breathe { 0%,100% { opacity: 0.45;} 50% { opacity: 1;} }',

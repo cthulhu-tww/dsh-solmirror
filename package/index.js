@@ -31,7 +31,8 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import z from '@deepseek-ai/schemastery'
 import { uploadReference, UploadError } from './upload.js'
 
-export const name = 'solmirror-dsh'
+// 包名（须与 package.json name / cordis.patch.yml name 一致；npm 发布名 2026-11-09 起）
+export const name = 'dsh-solmirror'
 
 /** 依赖宿主服务：工具注册、凭据解析、webserver 管理路由（base+web-app 组合均提供）。 */
 export const inject = ['tools', 'credentials', 'webServer']
@@ -64,6 +65,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+// 文件名沿用旧包名不改：改名会丢历史会话的 callId→generationId 映射（媒体卡回放依赖）
 const CALLS_FILE = join(homedir(), '.dsh', 'plugins', 'solmirror-dsh-calls.json')
 
 export function apply(ctx, config) {
