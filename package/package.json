@@ -25,17 +25,19 @@
     "image-generation",
     "video-generation"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://gitee.com/beijing-solmirror/solmirror-dsh.git"
+    "url": "git+https://github.com/cthulhu-tww/dsh-solmirror.git"
   },
+  "homepage": "https://github.com/cthulhu-tww/dsh-solmirror#readme",
   "files": [
     "index.js",
     "client.js",
     "upload.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "dependencies": {
     "@deepseek-ai/dsh-credentials": "0.2.2-alpha.2",
