@@ -10,7 +10,11 @@
  *
  * 2) 接管生成工具行的渲染（tool.call.toolview 键控插槽）：气泡内展示生成
  *   进度，成功后内嵌 <video> / 出图墙（媒体地址经宿主半边本地路由动态取新，
- *   过期也能回放历史会话）。
+ *   过期也能回放历史会话）。出图墙与气泡正文去重（0.14.3）：agent 回贴的
+ *   markdown 图（同 URL 路径）不再重复出缩略图，全部重复时卡片收敛成回执。
+ * 3) 媒体内部预览（2026-11-10 改版）：自绘放大层统一接管图/视频，关闭钮在
+ *   媒体盒内 hover 显示（不与窗口按钮打架），图片支持滚轮缩放/拖拽平移——
+ *   都不再跳系统浏览器；「在新标签页打开」仍保留为主动出口。
  *
  * 格式约定：dsh client 模块表工厂（window.__ModuleLoader__.load）。
  */
@@ -18,6 +22,17 @@ window.__ModuleLoader__.load({
   id: 'dsh-solmirror',
   factory(require) {
     const React = require('react')
+    const ReactDOM = require('react-dom')
+
+    // 平台共享模块表（宿主 shell 冻结表）里的原生图标；老宿主缺失时
+    // 优雅降级：图标位退化成文字符号。
+    let IconClose = null
+    let IconFullscreen = null
+    try {
+      const primitives = require('@deepseek-ai/dsh-client-ui-primitives')
+      IconClose = primitives.IconCloseOutlineRegular ?? null
+      IconFullscreen = primitives.IconFullscreenOutlineRegular ?? null
+    } catch { /* 平台表无此模块时用文字符号兜底 */ }
 
     const S = {
       wrap: { display: 'flex', flexDirection: 'column', gap: '18px', fontSize: '13px', lineHeight: 1.6 },
@@ -225,7 +240,6 @@ window.__ModuleLoader__.load({
       ok: { color: '#2f9e5f' },
       link: { color: 'rgba(90,140,230,0.95)', fontSize: '12px' },
       video: { width: '100%', maxWidth: '420px', borderRadius: '10px', background: '#000', display: 'block' },
-      imgRow: { display: 'flex', flexWrap: 'wrap', gap: '8px' },
       rowLine: { display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '12px', color: 'rgba(165,165,180,0.95)', padding: '2px 0' },
     }
 
@@ -245,6 +259,62 @@ window.__ModuleLoader__.load({
       '.solmirror-ph-title { font-size: 14px; font-weight: 600; color: rgba(175,178,195,0.95);',
       '  animation: solmirror-breathe 2s ease-in-out infinite; letter-spacing: 2px; }',
       '.solmirror-ph-sub { font-size: 11px; color: rgba(150,153,170,0.8); }',
+      // 媒体放大层：关闭钮放媒体盒内部 hover 显示——
+      // 旧版贴 stage 顶边定位，桌面端与窗口按钮/标题栏打架（--dsh-frame-chrome-top
+      // 变量在部分客户端解析不到时 stage 贴顶，按钮一半压进标题栏区）。盒内定位与
+      // 窗口 chrome 完全解耦；图片另支持滚轮缩放。变量取宿主设计令牌、缺宿主时
+      // 退化为通用值（stage 的 chrome-top fallback=40px 保证标题栏下留白）
+      '.solmirror-ov-backdrop { position: fixed; inset: 0; z-index: 1000; }',
+      '.solmirror-ov-stage { position: absolute; inset: var(--dsh-frame-chrome-top, 40px) 0 0;',
+      '  display: flex; align-items: center; justify-content: center; padding: 32px; }',
+      '.solmirror-ov-mask { position: absolute; inset: 0;',
+      '  background: var(--dsh-alias-bg-mask-1, rgba(0,0,0,0.72));',
+      '  backdrop-filter: var(--dsw-mask-blur, blur(8px)); }',
+      '.solmirror-ov-frame { position: relative; display: inline-flex; }',
+      '.solmirror-ov-box { position: relative; display: inline-flex; overflow: hidden;',
+      '  border-radius: var(--dsw-radius-lg, 10px); background: rgba(0,0,0,0.45);',
+      '  box-shadow: var(--dsw-elevation-prominent, 0 12px 48px rgba(0,0,0,0.5)); }',
+      // 媒体尺寸用视口单位直接自限——百分比链（max-height:100%）在 shrink-wrap
+      // 盒内解析不到（首版盒包装因此把图压小/裁剪）。右侧预留 120px（关钮外挂
+      // 不遮图）、底部预留 108px（工具条下沉不遮图）；chrome-top fallback 40px
+      '.solmirror-ov-media { display: block;',
+      '  max-width: min(calc(100vw - 120px), 1600px);',
+      '  max-height: calc(100vh - var(--dsh-frame-chrome-top, 40px) - 108px);',
+      '  object-fit: contain; transform-origin: center center; will-change: transform; }',
+      // 关闭钮：白色，平移到图片右外侧（挂不裁剪的 frame 上，box 的
+      // overflow:hidden 裁不到它），hover 显示
+      '.solmirror-ov-close { position: absolute; top: 0; right: -46px; z-index: 2;',
+      '  display: grid; place-items: center; width: 34px; height: 34px; border: 0;',
+      '  border-radius: 999px; background: #fff; color: #1f2128;',
+      '  box-shadow: 0 2px 10px rgba(0,0,0,0.35); cursor: pointer;',
+      '  opacity: 0; transition: opacity 0.15s; }',
+      '.solmirror-ov-frame:hover .solmirror-ov-close,',
+      '.solmirror-ov-close:focus-visible { opacity: 1; }',
+      // 缩放工具条（图片）：左下角下沉 hover 显示；白色系；百分比实时反映缩放状态
+      '.solmirror-ov-tools { position: absolute; left: 16px; bottom: 10px; z-index: 2;',
+      '  display: flex; align-items: center; gap: 6px; opacity: 0; transition: opacity 0.15s; }',
+      '.solmirror-ov-backdrop:hover .solmirror-ov-tools { opacity: 1; }',
+      '.solmirror-ov-tools button { display: grid; place-items: center; width: 30px; height: 30px;',
+      '  border: 0; border-radius: 999px; background: #fff; color: #1f2128;',
+      '  box-shadow: 0 2px 10px rgba(0,0,0,0.35); cursor: pointer; font-size: 16px; line-height: 1; }',
+      '.solmirror-ov-scale { min-width: 52px; text-align: center; font-size: 12px; color: #1f2128;',
+      '  background: #fff; border-radius: 999px; padding: 7px 10px;',
+      '  box-shadow: 0 2px 10px rgba(0,0,0,0.35); font-variant-numeric: tabular-nums; }',
+      // 出图墙（0.14.3）：单张=大图、多张=平铺网格；hover 微浮起提示可点，
+      // 点击开应用内放大层（尺寸按张数在 JS 内联给出）
+      '.solmirror-thumbs { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }',
+      '.solmirror-thumb { display: block; padding: 0; border: 0; background: transparent;',
+      '  cursor: zoom-in; border-radius: 10px; }',
+      '.solmirror-thumb img { display: block; border-radius: 10px;',
+      '  transition: transform 0.15s ease, box-shadow 0.15s ease; }',
+      '.solmirror-thumb:hover img { transform: translateY(-2px);',
+      '  box-shadow: 0 8px 22px rgba(0,0,0,0.28); }',
+      // 内联视频右上角的放大钮
+      '.solmirror-video-box { position: relative; width: fit-content; max-width: 100%; }',
+      '.solmirror-zoom { position: absolute; top: 8px; right: 8px; z-index: 1; display: grid;',
+      '  place-items: center; width: 30px; height: 30px; border: 0; border-radius: 999px;',
+      '  background: rgba(0,0,0,0.45); color: #fff; cursor: zoom-in; opacity: 0; transition: opacity 0.15s; }',
+      '.solmirror-video-box:hover .solmirror-zoom, .solmirror-zoom:focus-visible { opacity: 1; }',
     ].join('\n')
     document.head.append(styleTag)
 
@@ -309,6 +379,36 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    // ---- 气泡正文与结果卡片去重（0.14.3）----
+    // agent 常把 get_media_url 的地址用 ![](url) 贴进正文（宿主渲染成大图），
+    // 结果卡片再出一张小图=同一张图看两遍。地址每次现签（query 变），但 URL
+    // 路径恒定且与卡片地址同源同 signer——按路径精确对上即视为「已在正文展示」，
+    // 卡片侧跳过该图，全部命中时收敛成一行回执。
+    const EMPTY_PATHS = new Set()
+
+    function pathOf(url) {
+      return String(url).split(/[?#]/)[0]
+    }
+
+    // markdown 图片语法 + <img> 标签两种内嵌形态都认（后者个别模型爱用）
+    const INLINE_IMG_RE = /!\[[^\]]*\]\(\s*(https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\s*\)|<img[^>]*\ssrc=["'](https?:\/\/[^"']+)["']/gi
+
+    function collectInlineImagePaths(turnNodes) {
+      const paths = new Set()
+      for (const node of turnNodes) {
+        // assistant-step 相：data.blocks=AssistantBlock[]（kind:'text' 带正文）
+        const blocks = Array.isArray(node?.data?.blocks) ? node.data.blocks : []
+        for (const block of blocks) {
+          if (block?.kind !== 'text' || !block.text) continue
+          for (const match of String(block.text).matchAll(INLINE_IMG_RE)) {
+            const url = match[1] ?? match[2]
+            if (url) paths.add(pathOf(url))
+          }
+        }
+      }
+      return paths
+    }
+
     // callId→generationId 映射（宿主半边私有路由）：新会话的媒体面靠这张表
     // 反查；旧会话文本里本就有 id，regex 兜底。
     const callsCache = { at: 0, data: {} }
@@ -325,14 +425,18 @@ window.__ModuleLoader__.load({
       return callsCache.data
     }
 
-    /** 占位框：跟随生成比例的空白框 + 扫光动效 + 生成中文案。 */
-    function Placeholder({ aspect, sub }) {
+    /** 占位框：跟随生成比例的空白框 + 扫光动效 + 生成中文案。
+     *  small=true 为网格内贴片尺寸（与出图墙缩略图同量级，0.14.6）。
+     *  工厂式调用（非组件），key 需随参数透传给根元素。 */
+    function Placeholder({ key, aspect, sub, small }) {
       const ratio = aspect ?? { w: 16, h: 9 }
       const portrait = ratio.h > ratio.w
+      const capW = small ? 240 : 420
+      const capH = small ? 300 : 360
       const style = portrait
-        ? { height: '360px', width: 'auto', aspectRatio: `${ratio.w} / ${ratio.h}`, maxWidth: '100%' }
-        : { width: '100%', maxWidth: '420px', aspectRatio: `${ratio.w} / ${ratio.h}` }
-      return React.createElement('div', { className: 'solmirror-ph', style },
+        ? { height: `${capH}px`, width: 'auto', aspectRatio: `${ratio.w} / ${ratio.h}`, maxWidth: '100%' }
+        : { width: '100%', maxWidth: `${capW}px`, aspectRatio: `${ratio.w} / ${ratio.h}` }
+      return React.createElement('div', { key, className: 'solmirror-ph', style },
         React.createElement('div', { className: 'solmirror-ph-sweep' }),
         React.createElement('div', { className: 'solmirror-ph-face' },
           React.createElement('div', { className: 'solmirror-ph-title' }, '生成中'),
@@ -340,10 +444,131 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /** 单个生成的媒体卡：轮询本地路由，占位 → 播放器/图片/错误。 */
-    function MediaCard({ gen }) {
+    /** 应用内媒体放大层（自绘）：portal 到 body 的全屏遮罩，Esc 或点遮罩或关闭钮关；
+     *  视频自动播放并带控制条；图片支持滚轮缩放（中心锚点，1~10 倍，滚轮作用整个
+     *  遮罩层——鼠标在图上/遮罩上都能缩）、放大后拖拽平移、双击在 1x/2.5x 间切换；
+     *  关闭钮在媒体盒内部右上角，hover 显示。 */
+    function MediaOverlay({ url, kind, onClose }) {
+      const [zoom, setZoom] = React.useState({ s: 1, x: 0, y: 0 })
+      const backdropRef = React.useRef(null)
+      const mediaRef = React.useRef(null)
+      const dragRef = React.useRef(null)
+
+      React.useEffect(() => {
+        const onKeyDown = event => {
+          if (event.key === 'Escape') { event.stopPropagation(); onClose() }
+        }
+        window.addEventListener('keydown', onKeyDown, true)
+        return () => window.removeEventListener('keydown', onKeyDown, true)
+      }, [onClose])
+
+      // 缩放统一入口：倍率钳制 1~10，平移钳制在媒体边界内
+      const nudgeZoom = factor => setZoom(prev => {
+        const s = Math.min(10, Math.max(1, prev.s * factor))
+        const img = mediaRef.current
+        const maxX = ((img?.offsetWidth ?? 0) * (s - 1)) / 2
+        const maxY = ((img?.offsetHeight ?? 0) * (s - 1)) / 2
+        return {
+          s,
+          x: Math.max(-maxX, Math.min(maxX, prev.x)),
+          y: Math.max(-maxY, Math.min(maxY, prev.y)),
+        }
+      })
+
+      // 图片滚轮缩放：window 捕获阶段拦截（先于宿主任何捕获/冒泡监听，防滚动劫持），
+      // 仅当事件目标在本遮罩层内才消费；原生非 passive 才能 preventDefault
+      React.useEffect(() => {
+        if (kind !== 'image') return undefined
+        const onWheel = event => {
+          const root = backdropRef.current
+          if (!root || !(event.target instanceof Node) || !root.contains(event.target)) return
+          event.preventDefault()
+          event.stopPropagation()
+          nudgeZoom(event.deltaY < 0 ? 1.2 : 1 / 1.2)
+        }
+        window.addEventListener('wheel', onWheel, { capture: true, passive: false })
+        return () => window.removeEventListener('wheel', onWheel, { capture: true })
+      }, [kind])
+
+      // 缩回 1x 时平移复位
+      React.useEffect(() => {
+        if (zoom.s === 1 && (zoom.x !== 0 || zoom.y !== 0)) setZoom({ s: 1, x: 0, y: 0 })
+      }, [zoom])
+
+      const isImage = kind === 'image'
+      const media = isImage
+        ? React.createElement('img', {
+            ref: mediaRef, className: 'solmirror-ov-media', src: url, alt: '媒体预览',
+            draggable: false, style: {
+              transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})`,
+              cursor: zoom.s > 1 ? 'grab' : 'default',
+              userSelect: 'none',
+            },
+            onDoubleClick: () => setZoom(prev => (prev.s > 1 ? { s: 1, x: 0, y: 0 } : { s: 2.5, x: 0, y: 0 })),
+            onPointerDown: event => {
+              if (zoom.s <= 1) return
+              event.preventDefault()
+              dragRef.current = { px: event.clientX, py: event.clientY, x: zoom.x, y: zoom.y, id: event.pointerId }
+              event.currentTarget.setPointerCapture(event.pointerId)
+            },
+            onPointerMove: event => {
+              const d = dragRef.current
+              const el = mediaRef.current
+              if (!d || !el || d.id !== event.pointerId) return
+              const maxX = (el.offsetWidth * (zoom.s - 1)) / 2
+              const maxY = (el.offsetHeight * (zoom.s - 1)) / 2
+              setZoom(prev => ({
+                s: prev.s,
+                x: Math.max(-maxX, Math.min(maxX, d.x + event.clientX - d.px)),
+                y: Math.max(-maxY, Math.min(maxY, d.y + event.clientY - d.py)),
+              }))
+            },
+            onPointerUp: () => { dragRef.current = null },
+            onPointerCancel: () => { dragRef.current = null },
+          })
+        : React.createElement('video', {
+            ref: mediaRef, className: 'solmirror-ov-media', src: url, controls: true,
+            autoPlay: true, playsInline: true, preload: 'metadata', style: { background: '#000' },
+          })
+      return ReactDOM.createPortal(
+        React.createElement('div', {
+          ref: backdropRef, className: 'solmirror-ov-backdrop', role: 'dialog', 'aria-modal': 'true',
+        },
+          React.createElement('div', { className: 'solmirror-ov-stage' },
+            React.createElement('div', { className: 'solmirror-ov-mask', 'aria-hidden': 'true', onMouseDown: onClose }),
+            React.createElement('div', { className: 'solmirror-ov-frame' },
+              React.createElement('div', { className: 'solmirror-ov-box' }, media),
+              React.createElement('button', {
+                type: 'button', className: 'solmirror-ov-close', 'aria-label': '关闭预览', onClick: onClose,
+              }, IconClose ? React.createElement(IconClose, { size: 15 }) : '×'))),
+          isImage
+            ? React.createElement('div', { className: 'solmirror-ov-tools' },
+                React.createElement('button', {
+                  type: 'button', 'aria-label': '缩小', onClick: () => nudgeZoom(0.8),
+                }, '−'),
+                React.createElement('span', { className: 'solmirror-ov-scale' }, `${Math.round(zoom.s * 100)}%`),
+                React.createElement('button', {
+                  type: 'button', 'aria-label': '放大', onClick: () => nudgeZoom(1.25),
+                }, '+'),
+                zoom.s > 1
+                  ? React.createElement('button', {
+                      type: 'button', 'aria-label': '复位', title: '复位',
+                      onClick: () => setZoom({ s: 1, x: 0, y: 0 }),
+                    }, '⤢')
+                  : null)
+            : null),
+        document.body)
+    }
+
+    /** 单个生成的媒体卡：轮询本地路由，占位 → 播放器/图片/错误。
+     *  inlineImagePaths=本回合 assistant 正文里已内嵌的图 URL 路径集合——
+     *  命中的图不再出缩略图（去重，0.14.3）。 */
+    function MediaCard({ gen, inlineImagePaths }) {
       const [info, setInfo] = React.useState(() => cachedTerminal(gen.generationId))
       const [netError, setNetError] = React.useState('')
+      // 应用内放大预览目标：null | { url, kind: 'image' | 'video' }
+      const [lightbox, setLightbox] = React.useState(null)
+      const inlineVideoRef = React.useRef(null)
       const generationId = gen.generationId
 
       React.useEffect(() => {
@@ -415,36 +640,263 @@ window.__ModuleLoader__.load({
           info && info.error ? React.createElement('div', { style: MS.err }, info.error) : null)
       }
       const urls = (info && Array.isArray(info.urls) ? info.urls : []).map(String).filter(Boolean)
+      // 与气泡正文重复的图（agent 已用 markdown 内嵌过同路径地址）不再出缩略图
+      const inline = inlineImagePaths ?? EMPTY_PATHS
+      const shownUrls = urls.filter(url => !inline.has(pathOf(url)))
+      const dupCount = urls.length - shownUrls.length
       const children = [
         React.createElement('div', { key: 'head', style: MS.head },
           React.createElement('span', { style: MS.title }, label),
-          React.createElement('span', { style: MS.ok }, '已生成')),
+          React.createElement('span', { style: MS.ok }, '已生成'),
+          !isVideo && urls.length > 1
+            ? React.createElement('span', { style: MS.tag }, `${urls.length} 张`)
+            : null),
       ]
       if (isVideo) {
         const url = urls[0] || (info && info.url) || ''
         if (url) {
-          children.push(React.createElement('video', {
-            key: 'video', controls: true, preload: 'metadata', src: url, style: MS.video,
-          }))
+          // 内联小窗可播；悬停浮出放大钮 → 应用内大窗自动播放（不跳浏览器）
+          children.push(React.createElement('div', { key: 'video', className: 'solmirror-video-box' },
+            React.createElement('video', {
+              ref: inlineVideoRef, controls: true, preload: 'metadata', src: url, style: MS.video,
+            }),
+            React.createElement('button', {
+              type: 'button', className: 'solmirror-zoom', 'aria-label': '放大播放', title: '放大播放',
+              onClick: () => {
+                if (inlineVideoRef.current) inlineVideoRef.current.pause()
+                setLightbox({ url, kind: 'video' })
+              },
+            }, IconFullscreen ? React.createElement(IconFullscreen, { size: 15 }) : '⤢')))
           if (info.summary) children.push(React.createElement('div', { key: 'summary', style: MS.muted }, info.summary))
           children.push(React.createElement('a', { key: 'open', href: url, target: '_blank', rel: 'noreferrer', style: MS.link }, '在新标签页打开'))
         }
-      } else if (urls.length) {
-        children.push(React.createElement('div', { key: 'imgs', style: MS.imgRow },
-          urls.map((url, index) => React.createElement('a', {
-            key: index, href: url, target: '_blank', rel: 'noreferrer', style: { display: 'block', borderRadius: '10px' },
+      } else if (shownUrls.length) {
+        // 出图墙（0.14.3）：单张=大图、多张=平铺网格；点击开应用内放大层
+        const single = shownUrls.length === 1
+        const thumbImgStyle = single
+          ? { maxWidth: '480px', maxHeight: '540px' }
+          : { maxWidth: '300px', maxHeight: '380px' }
+        children.push(React.createElement('div', { key: 'imgs', className: 'solmirror-thumbs' },
+          shownUrls.map((url, index) => React.createElement('button', {
+            key: index, type: 'button', className: 'solmirror-thumb',
+            'aria-label': `放大查看生成图 ${index + 1}`,
+            onClick: () => setLightbox({ url, kind: 'image' }),
           },
           React.createElement('img', {
-            src: url, alt: `生成图 ${index + 1}`, loading: 'lazy',
-            style: { display: 'block', maxWidth: '280px', maxHeight: '360px', borderRadius: '10px' },
+            src: url, alt: `生成图 ${index + 1}`, loading: 'lazy', style: thumbImgStyle,
           })))))
+        if (dupCount) {
+          children.push(React.createElement('div', { key: 'dup', style: MS.muted },
+            `另有 ${dupCount} 张已在上方消息中展示`))
+        }
+        if (info.summary) children.push(React.createElement('div', { key: 'summary', style: MS.muted }, info.summary))
+      } else if (dupCount) {
+        // 全部图都已在正文里展示：卡片收敛成回执，不再重复出图
+        children.push(React.createElement('div', { key: 'dup', style: MS.muted },
+          `${urls.length} 张生成图已在上方消息中展示`))
         if (info.summary) children.push(React.createElement('div', { key: 'summary', style: MS.muted }, info.summary))
       }
       if (netError) children.push(React.createElement('div', { key: 'net', style: MS.muted }, `状态刷新失败：${netError}`))
+      // 放大预览挂卡尾：统一自绘放大层（不用宿主 ImageLightbox——其关闭钮
+      // 贴 stage 顶边定位，在桌面端与窗口按钮打架，且无滚轮缩放）
+      if (lightbox) {
+        const close = () => setLightbox(null)
+        children.push(React.createElement(MediaOverlay, {
+          key: 'lightbox', url: lightbox.url, kind: lightbox.kind, onClose: close,
+        }))
+      }
       return React.createElement('div', { style: MS.wrap }, ...children)
     }
 
-    /** 从会话快照收集本回合的 solmirror 生成（含运行中与子调用）。 */
+    /** 多生成聚合轮询 hook（0.14.4 合并墙用）：一次 effect 管多个 generationId，
+     *  逐 id 轮询/缓存播种/指数退避/终态停表——口径与单卡 MediaCard 一致
+     *  （含 0.10.4 的「id 晚到先播种缓存再停表」教训）。 */
+    function useTerminalInfos(genIds) {
+      const key = genIds.join('|')
+      const [state, setState] = React.useState(() => {
+        const infos = {}
+        for (const id of genIds) {
+          const cached = cachedTerminal(id)
+          if (cached) infos[id] = cached
+        }
+        return { infos, netError: '' }
+      })
+      React.useEffect(() => {
+        let stopped = false
+        const timers = new Set()
+        const failures = new Map()
+        // 缓存播种：id 比首渲染晚一拍（calls 反查）时补种，否则卡片停在占位框
+        setState(prev => {
+          let changed = false
+          const seed = {}
+          for (const id of genIds) {
+            const cached = cachedTerminal(id)
+            if (cached && !prev.infos[id]) { seed[id] = cached; changed = true }
+          }
+          return changed ? { ...prev, infos: { ...prev.infos, ...seed } } : prev
+        })
+        const tick = async id => {
+          let netError = ''
+          try {
+            const response = await fetch(`/plugins/solmirror/generation/${id}`, { cache: 'no-store' })
+            const data = await response.json().catch(() => null)
+            if (stopped) return
+            if (data && data.ok) {
+              failures.set(id, 0)
+              setState(prev => ({ ...prev, netError: '', infos: { ...prev.infos, [id]: data } }))
+              if (TERMINAL_STATUSES.has(String(data.status).toLowerCase())) {
+                terminalCache.set(id, { at: Date.now(), data })
+                return
+              }
+            } else {
+              failures.set(id, (failures.get(id) ?? 0) + 1)
+              netError = (data && data.message) || `HTTP ${response.status}`
+            }
+          } catch (error) {
+            if (stopped) return
+            failures.set(id, (failures.get(id) ?? 0) + 1)
+            netError = String((error && error.message) || error)
+          }
+          if (stopped) return
+          if (netError) setState(prev => (prev.netError === netError ? prev : { ...prev, netError }))
+          const failureCount = failures.get(id) ?? 0
+          const timer = setTimeout(() => { timers.delete(timer); void tick(id) },
+            failureCount === 0 ? 5000 : Math.min(5000 * 2 ** failureCount, 60000))
+          timers.add(timer)
+        }
+        for (const id of genIds) {
+          if (cachedTerminal(id)) continue // 终态缓存命中=零请求
+          void tick(id)
+        }
+        return () => { stopped = true; for (const timer of timers) clearTimeout(timer) }
+      }, [key])
+      return state
+    }
+
+    /** 回合内图片生成合并墙（0.14.4）：多次 generate_image 不再各带一条
+     *  「图片生成 已生成」标题，收敛成一个区域——汇总头（已生成 X 张·生成中 Y·
+     *  Z 失败）+ 小图网格 + 聚合摘要（总张数/总积分/去重提示）；只有一张时
+     *  仍出大图。去重口径与单卡一致（正文已内嵌的同路径图跳过）。 */
+    function ImageStackCard({ gens, inlineImagePaths }) {
+      const inline = inlineImagePaths ?? EMPTY_PATHS
+      const genIds = gens.map(gen => gen.generationId).filter(Boolean)
+      const { infos, netError } = useTerminalInfos(genIds)
+      const [lightbox, setLightbox] = React.useState(null)
+
+      let shownUrls = []
+      let dupCount = 0
+      let pending = 0
+      let pendingAspect = null
+      let failed = 0
+      let failedMsg = ''
+      let points = 0
+      let pointsKnown = false
+      let totalImages = 0
+      for (const gen of gens) {
+        if (gen.error) {
+          failed += 1
+          if (!failedMsg) failedMsg = gen.error
+          continue
+        }
+        if (!gen.generationId) {
+          pending += 1
+          pendingAspect = pendingAspect ?? gen.aspect
+          continue
+        }
+        const info = infos[gen.generationId]
+        if (!info) {
+          pending += 1
+          pendingAspect = pendingAspect ?? gen.aspect
+          continue
+        }
+        const status = String(info.status).toLowerCase()
+        if (!TERMINAL_STATUSES.has(status)) {
+          pending += 1
+          pendingAspect = pendingAspect ?? gen.aspect
+          continue
+        }
+        if (status !== 'succeeded') {
+          failed += 1
+          if (!failedMsg && info.error) failedMsg = info.error
+          continue
+        }
+        const urls = (Array.isArray(info.urls) ? info.urls : []).map(String).filter(Boolean)
+        totalImages += urls.length
+        for (const url of urls) {
+          if (inline.has(pathOf(url))) dupCount += 1
+          else shownUrls.push(url)
+        }
+        if (info.points !== null && info.points !== undefined && Number.isFinite(Number(info.points))) {
+          points += Number(info.points)
+          pointsKnown = true
+        }
+      }
+
+      const headParts = [React.createElement('span', { key: 'label', style: MS.title }, '图片生成')]
+      if (totalImages > 0) {
+        headParts.push(React.createElement('span', { key: 'ok', style: MS.ok }, `已生成 ${totalImages} 张`))
+      }
+      if (pending > 0) {
+        headParts.push(React.createElement('span', { key: 'run', style: MS.muted }, `生成中 ${pending}`))
+      }
+      if (failed > 0) {
+        headParts.push(React.createElement('span', { key: 'fail', style: MS.err }, `${failed} 个失败`))
+      }
+      const children = [React.createElement('div', { key: 'head', style: MS.head }, ...headParts)]
+
+      if (pending > 0 && shownUrls.length === 0 && dupCount === 0) {
+        // 全部在途：一个占位框即可（多张时文案报数）
+        children.push(React.createElement('div', { key: 'ph', style: MS.wrap },
+          Placeholder({ aspect: pendingAspect, sub: pending > 1 ? `生成中 ${pending} 张` : undefined })))
+      }
+      if (shownUrls.length || pending > 0) {
+        // 已有出图 + 还有在途：占位以小贴片进网格末尾（0.14.6——修「墙里有图
+        // 就看不到生成中占位」）；全部在途时上面已出整框，不重复
+        const single = shownUrls.length === 1 && pending === 0
+        const thumbImgStyle = single
+          ? { maxWidth: '480px', maxHeight: '540px' }
+          : { maxWidth: '240px', maxHeight: '300px' }
+        const tiles = shownUrls.map((url, index) => React.createElement('button', {
+          key: index, type: 'button', className: 'solmirror-thumb',
+          'aria-label': `放大查看生成图 ${index + 1}`,
+          onClick: () => setLightbox({ url, kind: 'image' }),
+        },
+        React.createElement('img', {
+          src: url, alt: `生成图 ${index + 1}`, loading: 'lazy', style: thumbImgStyle,
+        })))
+        if (pending > 0 && shownUrls.length > 0) {
+          tiles.push(Placeholder({
+            key: 'pending-tile', aspect: pendingAspect,
+            sub: pending > 1 ? `还有 ${pending} 张` : undefined, small: true,
+          }))
+        }
+        children.push(React.createElement('div', { key: 'imgs', className: 'solmirror-thumbs' }, ...tiles))
+      } else if (dupCount > 0 && pending === 0) {
+        children.push(React.createElement('div', { key: 'dup', style: MS.muted },
+          `${dupCount} 张生成图已在上方消息中展示`))
+      }
+      // 聚合摘要：总张数 + 总积分 + 去重提示（多图才有信息量；单张积分照旧给）
+      const footParts = []
+      if (dupCount > 0 && shownUrls.length > 0) footParts.push(`另有 ${dupCount} 张已在上方消息中展示`)
+      if (pointsKnown) footParts.push(`共 ${totalImages} 张 · 消耗 ${points} 积分`)
+      if (footParts.length) {
+        children.push(React.createElement('div', { key: 'foot', style: MS.muted }, footParts.join('，')))
+      }
+      if (failedMsg) {
+        children.push(React.createElement('div', { key: 'failmsg', style: MS.err }, failedMsg.slice(0, 200)))
+      }
+      if (netError) {
+        children.push(React.createElement('div', { key: 'net', style: MS.muted }, `状态刷新失败：${netError}`))
+      }
+      if (lightbox) {
+        children.push(React.createElement(MediaOverlay, {
+          key: 'lightbox', url: lightbox.url, kind: lightbox.kind, onClose: () => setLightbox(null),
+        }))
+      }
+      return React.createElement('div', { style: MS.wrap }, ...children)
+    }
+
+    /** 从会话快照收集本回合的 solmirror 生成（含运行中与子调用）与正文内嵌图路径。 */
     function collectGenerations(snapshot, turnNumber, callsMap) {
       const found = []
       const seen = new Set()
@@ -477,24 +929,29 @@ window.__ModuleLoader__.load({
           aspect: parseAspect(argsRaw) ?? ratioOf(mapped?.aspect),
         })
       }
+      const turnNodes = []
       try {
         const keys = snapshot?.locations?.getTurn?.(turnNumber) ?? []
         for (const key of keys) {
           const node = snapshot?.nodes?.get?.(key)
-          if (node?.kind !== 'tool-call') continue
+          if (!node) continue
+          turnNodes.push(node)
+          if (node.kind !== 'tool-call') continue
           visit(node?.data?.root)
         }
       } catch { /* 快照结构异常时静默不渲染 */ }
-      return found
+      return { gens: found, inlineImagePaths: collectInlineImagePaths(turnNodes) }
     }
 
-    /** 回合尾部的媒体面：本回合每条 solmirror 生成一张媒体卡。 */
+    /** 回合尾部的媒体面：图片生成全部合并进一个区域（ImageStackCard，0.14.4），
+     *  视频仍一卡一播放器；正文已内嵌的图路径全链去重。 */
     function SolmirrorTurnTail(props) {
       const turnNumber = props?.turn?.turn
       const [calls, setCalls] = React.useState(null)
-      const gens = typeof props.useChat === 'function'
+      const collected = typeof props.useChat === 'function'
         ? props.useChat(snapshot => collectGenerations(snapshot, turnNumber, calls))
         : collectGenerations(null, turnNumber, calls)
+      const gens = collected?.gens ?? []
       React.useEffect(() => {
         if (!gens || gens.length === 0) return undefined
         if (gens.every(gen => gen.generationId)) return undefined
@@ -512,15 +969,40 @@ window.__ModuleLoader__.load({
         const timer = setInterval(attempt, 10_000)
         return () => { stopped = true; clearInterval(timer) }
       }) // 无依赖数组：gens 每快照变化都是新引用；重试有 30s TTL 兜底，开销可控
+      // 回合收编（0.14.6 闸②）：尾部挂载=本回合已收尾，把这些生成从工具行共享墙
+      // 释放（尾部墙接管展示）——新回合从空墙开始，旧回合行不再污染新回合的墙。
+      // 合成兜底 callId（`mcp__solmirror__generate_*-N`）与真实行 callId 对不上，
+      // 跳过即可。
+      React.useEffect(() => {
+        const callIds = (gens ?? [])
+          .map(gen => gen.callId)
+          .filter(id => id && !id.startsWith('mcp__solmirror__generate_'))
+        toolWallRelease(callIds)
+      }, [gens])
       if (!gens || gens.length === 0) return null
-      return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } },
-        gens.map(gen => React.createElement(MediaCard, { key: gen.callId, gen })))
+      // 图片并进一个合并墙（挂在首个图片生成的位置）；视频逐卡
+      const inlineImagePaths = collected?.inlineImagePaths
+      const imageGens = gens.filter(gen => gen.media === 'image')
+      const children = []
+      let stackPlaced = false
+      for (const gen of gens) {
+        if (gen.media === 'video') {
+          children.push(React.createElement(MediaCard, { key: gen.callId, gen, inlineImagePaths }))
+          continue
+        }
+        if (!stackPlaced) {
+          children.push(React.createElement(ImageStackCard, { key: 'imgstack', gens: imageGens, inlineImagePaths }))
+          stackPlaced = true
+        }
+      }
+      return React.createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } }, ...children)
     }
 
     /** 工具行视图：turn-tail 节点只在回合结束时发布，活跃回合里回合尾部不存在，
-     *  这段窗口的媒体面挂工具行（toolview 键控替换整行）：进行中=跟随比例占位框、
-     *  结果相=媒体卡（图片常已是终态直接出图墙；视频交给轮询）。回合收尾后工具行
-     *  折叠、回合尾部的媒体卡接管。id 解析不出或错误态回退一行回执；id 不上 UI。 */
+     *  这段窗口的媒体面挂工具行（toolview 键控替换整行）：视频=进行中跟随比例
+     *  占位框、结果相一行回执（尾部卡轮询接管）；图片=全部并进共享合并墙
+     *  （ImageToolRow，见 toolWall 注释）。回合收尾后工具行折叠、回合尾部的
+     *  媒体面接管。id 不上 UI。 */
     function toolRowView(media) {
       return function ToolRow(props) {
         const phase = props.phase
@@ -553,6 +1035,183 @@ window.__ModuleLoader__.load({
         return React.createElement('div', { style: MS.rowLine },
           React.createElement('span', null, label, ' · 已提交'))
       }
+    }
+
+    // ---- 图片工具行共享墙（0.14.5；0.14.6/0.14.7 修跨回合累积与误杀；0.14.8 补回执）----
+    // 宿主 toolview owner props 只有 callId/toolName/phase/block/…（实测
+    // ToolCallTree：无 useChat、无 turn），跨行合并拿不到回合快照——插件侧自建
+    // 注册表：每个图片工具行把自己的生成登记进来，只有「最新一条」行渲染合并墙，
+    // 其余行出单行回执（0.14.8：调用记录必须在，图才不重复）；行卸载即注销并
+    // 重选宿主行。回合收尾工具行折叠、回合尾部的 ImageStackCard 接管。
+    // 回放判别（0.14.7 重写；0.14.6 的「首见相位≠result」闸是错的——MCP 调用
+    // 先返回 generation_id、生成仍在服务端跑时，**活跃行就以 result 相位首挂**，
+    // 被误判回放导致工具气泡全空白）。新判据三道：
+    // ①首见相位≠result（preparing/start）= 活跃铁证（回放块永远是 result）；
+    // ②首见即 result 的行，问宿主半边 /calls 的 live 名单（宿主在 MCP 真执行时
+    //   记录本会话 callId，30 分钟滚动）——在名单=活跃，不在=历史回放；
+    // ③回合尾部挂载即释放本回合 callIds 并**永久拉黑**（released 集合）——回合
+    //   结束后展示归尾部，滚动重挂/同会话回放一律不再入墙（回执仍出）。
+    const toolWall = { gens: [], released: new Set(), listeners: new Set(), version: 0 }
+    let toolWallSeq = 0
+
+    function toolWallSubscribe(listener) {
+      toolWall.listeners.add(listener)
+      return () => { toolWall.listeners.delete(listener) }
+    }
+
+    function toolWallSnapshot() {
+      return toolWall.version
+    }
+
+    function toolWallEmit() {
+      toolWall.version += 1
+      for (const listener of toolWall.listeners) listener()
+    }
+
+    function sameGen(a, b) {
+      return a.media === b.media
+        && a.generationId === b.generationId
+        && a.error === b.error
+        && a.aspect?.w === b.aspect?.w
+        && a.aspect?.h === b.aspect?.h
+    }
+
+    function toolWallRegister(gen) {
+      if (toolWall.released.has(gen.callId)) return
+      const index = toolWall.gens.findIndex(item => item.callId === gen.callId)
+      if (index >= 0) {
+        if (sameGen(toolWall.gens[index], gen)) return // 无变化不广播，防渲染环
+        toolWall.gens[index] = gen
+      } else {
+        toolWall.gens.push(gen)
+      }
+      toolWallEmit()
+    }
+
+    function toolWallUnregister(callId) {
+      const before = toolWall.gens.length
+      toolWall.gens = toolWall.gens.filter(item => item.callId !== callId)
+      if (toolWall.gens.length !== before) toolWallEmit()
+    }
+
+    /** 回合收编：尾部接管展示后，把这些 callId 从共享墙释放并永久拉黑。 */
+    function toolWallRelease(callIds) {
+      if (!Array.isArray(callIds) || callIds.length === 0) return
+      let changed = false
+      for (const callId of callIds) {
+        if (toolWall.released.has(callId)) continue
+        toolWall.released.add(callId)
+        changed = true
+      }
+      const before = toolWall.gens.length
+      toolWall.gens = toolWall.gens.filter(item => !toolWall.released.has(item.callId))
+      if (changed || toolWall.gens.length !== before) toolWallEmit()
+    }
+
+    // 活跃调用核验缓存（callId→boolean）：宿主半边 /calls 回包的 live 名单是
+    // 真相源；每个 callId 会话内只核验一次，核验期间共享一个在途请求。
+    const liveProbeCache = new Map()
+    let liveProbeInflight = null
+
+    function probeLiveCallId(callId) {
+      if (liveProbeCache.has(callId)) return Promise.resolve(liveProbeCache.get(callId))
+      if (!liveProbeInflight) {
+        liveProbeInflight = fetch('/plugins/solmirror/calls', { cache: 'no-store' })
+          .then(response => response.json())
+          .then(data => {
+            const live = new Set(Array.isArray(data?.live) ? data.live.map(String) : [])
+            liveProbeInflight = null
+            return live
+          })
+          .catch(() => { liveProbeInflight = null; return new Set() })
+      }
+      return liveProbeInflight.then(live => {
+        const verdict = live.has(callId)
+        liveProbeCache.set(callId, verdict)
+        return verdict
+      })
+    }
+
+    /** 图片工具行的单行回执（0.14.8）：非宿主行/已释放行/回放行不再隐形——
+     *  工具气泡「已调用工具」展开后每次调用都留一条「图片生成 · 状态」记录
+     *  （图不重复展示，调用记录必须留痕）。状态经 /generation
+     *  轮询（terminalCache 与尾部墙共享，历史回放大多零请求）。 */
+    function ImageRowReceipt({ gen }) {
+      const singleId = gen.generationId ? [gen.generationId] : []
+      const { infos } = useTerminalInfos(singleId)
+      const info = gen.generationId ? infos[gen.generationId] : null
+      let label = '生成中'
+      let error = gen.error || ''
+      let okCount = 0
+      if (gen.error) {
+        label = '提交失败'
+      } else if (!gen.generationId) {
+        label = '已提交'
+      } else if (info) {
+        const status = String(info.status).toLowerCase()
+        if (status === 'succeeded') {
+          label = '已生成'
+          okCount = Array.isArray(info.urls) ? info.urls.length : 0
+        } else if (status === 'failed') {
+          label = '生成失败'
+          if (info.error) error = info.error
+        } else if (status === 'review_rejected') {
+          label = '审核未通过'
+        } else if (TERMINAL_STATUSES.has(status)) {
+          label = statusTextOf(status)
+        }
+      }
+      const labelStyle = label === '已生成' ? MS.ok
+        : (label === '生成失败' || label === '审核未通过' || label === '提交失败') ? MS.err : {}
+      return React.createElement('div', { style: MS.rowLine },
+        React.createElement('span', null, '图片生成 · ',
+          React.createElement('span', { style: labelStyle },
+            label === '已生成' && okCount > 1 ? `已生成 ${okCount} 张` : label)),
+        error ? React.createElement('span', { style: MS.err }, String(error).slice(0, 120)) : null)
+    }
+
+    /** 图片工具行：宿主行渲染合并墙；其余行（非宿主/已释放/回放）出单行回执。 */
+    function ImageToolRow(props) {
+      const phase = props.phase
+      const block = props.block
+      const isResult = phase === 'result'
+      const resultText = isResult && block && !block.isError ? textOf(block) : ''
+      const callId = String(props.callId ?? '') || `image-row-${++toolWallSeq}`
+      const gen = {
+        callId,
+        media: 'image',
+        generationId: generationIdOf('image', resultText),
+        aspect: parseAspect(isResult ? (block && block.call && block.call.argsRaw) : (block && block.argsRaw)),
+        error: isResult && block && block.isError ? textOf(block) : '',
+      }
+      const genRef = React.useRef(gen)
+      genRef.current = gen
+      // 活跃判定：null=未判定（渲染 null）/ true=活跃 / false=回放
+      const [live, setLive] = React.useState(null)
+      const aspectKey = gen.aspect ? `${gen.aspect.w}x${gen.aspect.h}` : ''
+      React.useEffect(() => {
+        if (live === null) {
+          let disposed = false
+          if (phase !== 'result') { setLive(true); return undefined } // 闸①起始相位
+          if (toolWall.released.has(genRef.current.callId)) { setLive(false); return undefined } // 闸③
+          void probeLiveCallId(genRef.current.callId).then(ok => { // 闸②宿主 live 名单
+            if (!disposed) setLive(ok)
+          })
+          return () => { disposed = true }
+        }
+        if (live !== true) return undefined
+        toolWallRegister(genRef.current)
+        return () => toolWallUnregister(genRef.current.callId)
+      }, [live, gen.callId, phase, gen.generationId, gen.error, aspectKey])
+      React.useSyncExternalStore(toolWallSubscribe, toolWallSnapshot, toolWallSnapshot)
+      // 宿主行=最新登记的图片行（活跃回合的新动作总在底部，墙跟着走）：出墙；
+      // 其余一切行（非宿主活跃行/已释放行/回放行）出单行回执——展开「已调用
+      // 工具」时每次调用都有记录（0.14.8，修 0.14.5~0.14.7 的行隐形）。
+      const host = toolWall.gens[toolWall.gens.length - 1]
+      if (live === true && host && host.callId === gen.callId) {
+        return React.createElement(ImageStackCard, { gens: [...toolWall.gens] })
+      }
+      return React.createElement(ImageRowReceipt, { gen })
     }
 
     return {
@@ -589,11 +1248,12 @@ window.__ModuleLoader__.load({
         // 媒体面（占位/播放器/图片）挂回合尾部：对话主流、不随工具行折叠
         ctx.slots.inject('conversation.chat.turnTail', () => ctx.slots.register(
           { name: 'conversation.chat.turnTail', id: 'solmirror' }, SolmirrorTurnTail))
-        // 工具行=活跃回合的媒体面（占位框/出图墙）；回合收尾后随行折叠、尾部卡接管
+        // 工具行=活跃回合的媒体面（占位框/出图墙）；回合收尾后随行折叠、尾部卡接管。
+        // 图片行走共享合并墙（ImageToolRow）；视频保持一行回执/占位框
         ctx.slots.inject('tool.call.toolview', () => {
           const disposers = [
             ctx.slots.register({ name: 'tool.call.toolview', key: VIDEO_TOOL }, toolRowView('video')),
-            ctx.slots.register({ name: 'tool.call.toolview', key: IMAGE_TOOL }, toolRowView('image')),
+            ctx.slots.register({ name: 'tool.call.toolview', key: IMAGE_TOOL }, ImageToolRow),
           ]
           return () => { for (const dispose of disposers) dispose() }
         })
