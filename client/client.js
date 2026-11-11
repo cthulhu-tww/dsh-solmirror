@@ -58,6 +58,18 @@ window.__ModuleLoader__.load({
       tag: { fontSize: '11px', padding: '1px 7px', borderRadius: '6px', background: 'rgba(128,128,140,0.18)', color: 'rgba(170,170,185,0.95)' },
     }
 
+    // ---- 管理路由 base 探测：优先 /api/solmirror/*（宿主认证通道，新宿主），
+    // 探测失败回退 /plugins/solmirror/*（老宿主直挂通道）。结果缓存。 ----
+    let adminBase = null
+    const resolveAdminBase = async () => {
+      if (adminBase) return adminBase
+      try {
+        const probe = await fetch('/api/solmirror/status', { cache: 'no-store' })
+        if (probe.ok) return (adminBase = '/api/solmirror')
+      } catch { /* 老宿主无此路由 */ }
+      return (adminBase = '/plugins/solmirror')
+    }
+
     function badgeOf(status) {
       if (status === 'connected') return { text: '已连接', color: '#2f9e5f', bg: 'rgba(47,158,95,0.14)' }
       if (status === 'connecting') return { text: '连接中…', color: '#c99a2e', bg: 'rgba(201,154,46,0.14)' }
@@ -124,7 +136,7 @@ window.__ModuleLoader__.load({
       })
 
       const runTest = () => withBusy('test', async () => {
-        const result = await ops.post('/plugins/solmirror/test')
+        const result = await ops.post(`${await resolveAdminBase()}/test`)
         setTestResult(result)
       })
 
@@ -415,7 +427,7 @@ window.__ModuleLoader__.load({
     async function loadCalls() {
       if (Date.now() - callsCache.at < 30_000) return callsCache.data
       try {
-        const response = await fetch('/plugins/solmirror/calls', { cache: 'no-store' })
+        const response = await fetch(`${await resolveAdminBase()}/calls`, { cache: 'no-store' })
         const data = await response.json()
         if (data && data.ok && data.calls && typeof data.calls === 'object') {
           callsCache.at = Date.now()
@@ -585,7 +597,7 @@ window.__ModuleLoader__.load({
         let failures = 0
         const tick = async () => {
           try {
-            const response = await fetch(`/plugins/solmirror/generation/${generationId}`, { cache: 'no-store' })
+            const response = await fetch(`${await resolveAdminBase()}/generation?id=${encodeURIComponent(generationId)}`, { cache: 'no-store' })
             const data = await response.json().catch(() => null)
             if (stopped) return
             if (data && data.ok) {
@@ -738,7 +750,7 @@ window.__ModuleLoader__.load({
         const tick = async id => {
           let netError = ''
           try {
-            const response = await fetch(`/plugins/solmirror/generation/${id}`, { cache: 'no-store' })
+            const response = await fetch(`${await resolveAdminBase()}/generation?id=${encodeURIComponent(id)}`, { cache: 'no-store' })
             const data = await response.json().catch(() => null)
             if (stopped) return
             if (data && data.ok) {
@@ -1116,7 +1128,7 @@ window.__ModuleLoader__.load({
     function probeLiveCallId(callId) {
       if (liveProbeCache.has(callId)) return Promise.resolve(liveProbeCache.get(callId))
       if (!liveProbeInflight) {
-        liveProbeInflight = fetch('/plugins/solmirror/calls', { cache: 'no-store' })
+        liveProbeInflight = resolveAdminBase().then(base => fetch(`${base}/calls`, { cache: 'no-store' }))
           .then(response => response.json())
           .then(data => {
             const live = new Set(Array.isArray(data?.live) ? data.live.map(String) : [])
@@ -1219,7 +1231,7 @@ window.__ModuleLoader__.load({
       apply(ctx) {
         const injected = () => ({
           async fetchStatus() {
-            const response = await fetch('/plugins/solmirror/status', { cache: 'no-store' })
+            const response = await fetch(`${await resolveAdminBase()}/status`, { cache: 'no-store' })
             if (!response.ok) throw new Error(`HTTP ${response.status}`)
             return response.json()
           },
